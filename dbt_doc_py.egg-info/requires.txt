@@ -1,0 +1,6 @@
+PyYAML
+dataclasses
+transformers
+asyncio
+argparse
+httpx

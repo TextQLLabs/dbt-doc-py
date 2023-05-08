@@ -2,11 +2,16 @@ from setuptools import setup, find_packages
 
 setup(
     name="dbt-doc-py",
-    version="0.1.0",
+    version="0.1.11",
     packages=find_packages(),
     install_requires=[
-        "os", "sys","json","enum","yaml","dataclasses","itertools","threading","transformers","asyncio","argparse","httpx",
+    "PyYAML", "dataclasses", "transformers", "asyncio", "argparse", "httpx",
     ],
+    entry_points={
+        "console_scripts": [
+            "dbt-doc-py=dbt_doc_py.dbt_doc_py:run_async_main",
+        ],
+    },
     author="TextQLLabs",
     author_email="lenin@textql.com",
     description="Automatically generate docs for undocumented DBT models.",

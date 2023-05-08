@@ -532,8 +532,8 @@ class Key:
         self.key = key
 
 async def main(argv) -> int:
-    try:        
-        args_env = parse_args(argv)
+    try:
+        args_env = parse_args(sys.argv[1:])
 
         manifest_path = os.path.join(args_env.working_directory, "target", "manifest.json")
         try:
@@ -599,5 +599,14 @@ async def main(argv) -> int:
     print("Success! Make sure to run `dbt docs generate`.")
     return 0
 
+async def async_main(argv):
+    await main(argv)
+
+def run_async_main():
+    if sys.platform == "win32" and sys.version_info >= (3, 8):        
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    asyncio.run(async_main(sys.argv[1:]))
+
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main(sys.argv[1:])))
+    run_async_main(sys.argv[1:])

@@ -1,0 +1,56 @@
+Metadata-Version: 2.1
+Name: dbt-doc-py
+Version: 0.1.11
+Summary: Automatically generate docs for undocumented DBT models.
+Home-page: https://github.com/TextQLLabs/dbt-doc-py.git
+Author: TextQLLabs
+Author-email: lenin@textql.com
+Classifier: Development Status :: 3 - Alpha
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3.11
+Description-Content-Type: text/markdown
+License-File: LICENCE
+
+# DBT Documentor (Python Version)
+
+Automatically generate docs for undocumented DBT models.
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Usage](#usage)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Installation
+
+To install the package, run the following command:
+
+```bash
+pip install dbt-doc-py
+```
+
+## Usage
+Place inside of the DBT project folder and run this command:
+
+```
+dbt-doc-py
+```
+
+You can execute it from other directories, this way:
+
+```
+dbt-doc-py --working-directory /folder/DBTproject
+```
+
+TO-DO: Finish README file:
+
+## Documentation
+
+
+## Contributing
+
+
+## License
+This project is licensed under the MIT License. See the LICENSE file for details.

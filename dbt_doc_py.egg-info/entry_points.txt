@@ -1,0 +1,2 @@
+[console_scripts]
+dbt-doc-py = dbt_doc_py.dbt_doc_py:run_async_main
