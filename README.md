@@ -22,13 +22,13 @@ pip install dbt-doc-py
 Place inside of the DBT project folder and run this command:
 
 ```
-dby-doc.py
+dbt-doc-py
 ```
 
 You can execute it from other directories, this way:
 
 ```
-dby-doc.py --working_directory /folder/DBTproject
+dbt-doc-py --working_directory /folder/DBTproject
 ```
 
 TO-DO: Finish README file:
