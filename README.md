@@ -1,6 +1,6 @@
-# Project Name
+# DBT Documentor (Python Version)
 
-Short project description goes here. Explain what your project does and its main features.
+Automatically generate docs for undocumented DBT models.
 
 ## Table of Contents
 
