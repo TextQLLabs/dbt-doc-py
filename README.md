@@ -28,7 +28,7 @@ dbt-doc-py
 You can execute it from other directories, this way:
 
 ```
-dbt-doc-py --working_directory /folder/DBTproject
+dbt-doc-py --working-directory /folder/DBTproject
 ```
 
 TO-DO: Finish README file:
