@@ -1,4 +1,5 @@
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple
+import inquirer
 import os
 import sys
 import json
@@ -11,6 +12,7 @@ from transformers import GPT2Tokenizer
 import asyncio
 import argparse
 import httpx
+import subprocess
 
 stdout_lock = threading.Lock()
 
@@ -144,6 +146,9 @@ class Gen_Undocumented(Arguments):
 class Gen_Specific(Arguments):
     models_list: str
 
+class DbtDocGen(Arguments):
+    pass
+
 class Dry_Run(Arguments):
     pass
 
@@ -151,10 +156,13 @@ class GenMode(Enum):
     undocumented = 1
     specific = 2
 
+documented_nodes = {}
+
 class ArgsConfig:
-    def __init__(self, working_directory: str, gen_mode: GenMode, dry_run: bool):
+    def __init__(self, working_directory: str, gen_mode: GenMode, dbtDocGen: bool, dry_run: bool):
         self.working_directory = working_directory
         self.gen_mode = gen_mode
+        self.dbtDocGen = dbtDocGen
         self.dry_run = dry_run
 
 def mk_prompt(reverse_deps: Dict[str, List[str]], node: NodeMetadata) -> str:
@@ -182,16 +190,35 @@ def mk_prompt(reverse_deps: Dict[str, List[str]], node: NodeMetadata) -> str:
     """
     return prompt
 
-def mk_column_prompt(node: NodeMetadata, col: ColumnMetadata) -> str:
+def mk_column_prompt(node: NodeMetadata, col: ColumnMetadata, documented_nodes: Dict[str, NodeMetadata]) -> str:
+    # Check if the current column depends on any documented nodes
+    deps = node.depends_on.nodes if node.depends_on and node.depends_on.nodes else []
+    inherited_docs = []
+    for dep in deps:
+        if dep in documented_nodes:
+            # Add the name and description of each column in the dependent node to the list of inherited docs
+            for dep_col in documented_nodes[dep].columns.values():
+                if dep_col.name in dep_col.depends_on.columns:
+                    inherited_docs.append(dep_col.description)
+
+    # Combine the inherited docs into a single string
+    inherited_docs_str = "\n\n".join(inherited_docs)
+    inheritance = f"""This column is inherited from another model. Use this column's documentation from the original model 
+    as context for writing the requested one and be sure to mention it alongside the name of the original model. 
+    Inherited documentation: {inherited_docs_str} """ if inherited_docs_str else ""
+
     prompt = f"""Write markdown documentation to explain the following DBT column in the context of the parent model and SQL code. Be clear and informative, but also accurate. The only information available is the metadata below.
     Do not list the SQL code or column names themselves; an explanation is sufficient.
 
     Column Name: {col.name}
     Parent Model name: {node.name}
     Raw SQL code: {node.raw_code}
+    {inheritance}
 
-    First, explain the meaning of the column in plain, non-technical English.false
-    Then, explain how the column is extracted in code.
+    First, explain the meaning of the column in plain, non-technical English. Then, explain how the column is extracted in code.
+    If the column is calculated from other columns, explain how the calculation works.
+    If the column is derived from other columns, explain how those columns are extracted.
+    If the column is a inherited from another model, mention the original model and use the provided Inherited documentation (If there is any).
     """
     return prompt
 
@@ -239,6 +266,8 @@ async def run_openai_request(env: Env, prompt: str) -> str:
             headers = {"Content-Type": "application/json"}
             body = OAIRequestWithUserInfo(prompt=prompt, email=env.api_key.user_info)
             data = json.dumps(body.__dict__)
+            print(f"Using TextQL API with user info {env.api_key.user_info}")
+            print(f"Data {data}")
         
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, data=data, timeout=60)        
@@ -256,7 +285,7 @@ async def gen_column_summaries(env: Env, node: NodeMetadata) -> Dict[str, str]:
     prefix = "[ai-gen] "
     
     async def mapper(k: str, column: ColumnMetadata) -> Tuple[str, str]:
-        result = await run_openai_request(env, mk_column_prompt(node, column))        
+        result = await run_openai_request(env, mk_column_prompt(node, column, documented_nodes))        
         return (k, prefix + result)
     
     filtered_columns = {k: v for k, v in node.columns.items() if v.description == ""}
@@ -391,7 +420,7 @@ def insert_docs(env: Env, patch_path_may: Optional[str], nodes: List[SummarizedR
 
     for model_obj in models_node:
         model_name = model_obj['name']
-        model = model_obj['columns']        
+        model = model_obj.get('columns', [])  # If 'columns' doesn't exist, default to an empty list.        
         if model_name in result_map:
             insert_description(env, result_map, model_obj)
 
@@ -436,8 +465,46 @@ def should_write_doc(env: Env, pair: Tuple[str, NodeMetadata]) -> bool:
 
     if not has_patch_path and cond:
         print(f"Model {pair[0]} doesn't appear to be declared in a .yml file. Generating docs isn't yet supported for models without a corresponding yaml declaration.")
+        user_input = input("Do you want to generate the missing .yml file? Y/n: ")
+        if user_input.lower() == 'y':
+            generateYaml(env,pair[1])
+            return True
 
     return has_patch_path and cond
+
+def generateYaml(env: Env,node_metadata: NodeMetadata):
+    # Get the path to the .yml file
+    yaml_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), node_metadata.name + '.yml')
+
+    try:
+        catalog_path = os.path.join(env.base_path, "target", "catalog.json")
+        catalog = getCatalog(catalog_path)
+    except Exception as e:
+        print("catalog.json deserialization failed")
+        raise e
+
+    # Extract column names
+    column_list = []
+    for model_name, columns in catalog.items():
+        if model_name == node_metadata.name:
+            column_list = [{'name': col_name} for col_name in columns]
+
+    # Create the data structure for the YAML file
+    data = {
+        "version": 2,
+        "models": [
+            {
+                "name": node_metadata.name,
+                "columns": column_list
+            }
+        ]
+    }
+
+    # Write the data structure to the YAML file
+    with open(yaml_file_path, 'w') as yaml_file:
+        yaml.dump(data, yaml_file, default_flow_style=False)
+
+    print(f"YAML file successfully generated at {yaml_file_path}!")
 
 def mk_reverse_dependency_map(nodes: Dict[str, NodeMetadata]) -> Dict[str, List[str]]:
     ans: Dict[str, List[str]] = {}
@@ -469,11 +536,13 @@ def parse_args(argv) -> ArgsConfig:
     gen_mode_group.add_argument("--undocumented", dest="gen_mode", action="store_const", const=GenMode.undocumented, default=GenMode.undocumented, help="Use undocumented gen mode.")
     gen_mode_group.add_argument("--specific", dest="gen_mode", type=lambda s: GenMode.specific(list(s.split(','))), help="Use specific gen mode with a list of models.")
     
+    parser.add_argument("--dbtDocGen", type=bool, default=True, help="Run command `dbt docs generate` automatically.")
+
     parser.add_argument("--dry-run", action="store_true", help="Enable dry run mode.")
     
     args = parser.parse_args(argv)
 
-    return ArgsConfig(working_directory=args.working_directory, gen_mode=args.gen_mode, dry_run=args.dry_run)
+    return ArgsConfig(working_directory=args.working_directory, gen_mode=args.gen_mode, dbtDocGen=args.dbtDocGen, dry_run=args.dry_run)
 
 def parse_columns(json_data: Dict[str, dict]) -> Dict[str, ColumnMetadata]:
     columns = {}
@@ -523,6 +592,33 @@ def load_manifest_from_json(file_path: str) -> Manifest:
     json_data = read_json_file(file_path)
     return parse_manifest(json_data)
 
+def getCatalog(json_file: str) -> Dict[str, List[str]]:
+    with open(json_file) as f:
+        data = json.load(f)
+    
+    models_columns = dict()
+    
+    # Loop through nodes, there might be multiple models
+    for node in data['nodes'].values():
+        # Get model name
+        model_name = node['metadata']['name']
+        
+        # Get column names
+        columns = list(node['columns'].keys())
+        
+        # Add model and its columns to the result
+        models_columns[model_name] = columns
+    
+    return models_columns
+
+def get_nodes_with_description(manifest_path: str) -> Dict[str, NodeMetadata]:
+    manifest = load_manifest_from_json(manifest_path)
+    nodes_with_description = {}
+    for node_name, node_metadata in manifest.nodes.items():
+        if node_metadata.description != "":
+            nodes_with_description[node_name] = node_metadata
+    return nodes_with_description
+
 class UserInfo:
     def __init__(self, email: str):
         self.email = email
@@ -531,23 +627,32 @@ class Key:
     def __init__(self, key: str):
         self.key = key
 
-async def main(argv) -> int:
+def run_dbt_docs_generate(path_to_dbt_project, arg_dbtDocGen):
+    if arg_dbtDocGen:
+        try:
+            print("Running DBT docs generate...")
+            subprocess.check_output(['dbt', 'docs', 'generate'], cwd=path_to_dbt_project)
+            print("DBT docs successfully generated!")
+        except subprocess.CalledProcessError as e:
+            print("Could not generate DBT docs.")
+            print("Error:")
+            print(e.output)
+    else:
+        print("DBT docs generation is turned off... Make sure to run `dbt docs generate` before and after running this tool.")
+
+async def main(argv) -> int:    
     try:
         args_env = parse_args(sys.argv[1:])
 
-        manifest_path = os.path.join(args_env.working_directory, "target", "manifest.json")
-        try:
-            with open(manifest_path, "r") as f:
-                contents = f.read()
-        except Exception as e:
-            print("Reading target/manifest.json failed. Please re-run from a dbt project with generated docs")
-            raise e
+        run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+
+        manifest_path = os.path.join(args_env.working_directory, "target", "manifest.json")        
 
         try:
             manifest = load_manifest_from_json(manifest_path)
         except Exception as e:
             print("manifest.json deserialization failed")
-            raise e
+            raise e        
 
         try:            
             project_name = read_project_config(args_env.working_directory)
@@ -571,6 +676,8 @@ async def main(argv) -> int:
 
         models = None if args_env.gen_mode == GenMode.undocumented else set(args_env.gen_mode.value)
 
+        documented_nodes = get_nodes_with_description(manifest_path)
+
         init = (manifest, Env(api_key=user_info, base_path=args_env.working_directory, project_name=project_name, models=models, dry_run=args_env.dry_run))
 
     except ArguParseException as e:
@@ -588,7 +695,27 @@ async def main(argv) -> int:
     
     r_deps = mk_reverse_dependency_map(manifest.nodes)
 
-    nodes_to_process = [pair for pair in manifest.nodes.items() if should_write_doc(env, pair)]
+    ### Model Selection ###
+    options = [(k, (k, v)) for k, v in manifest.nodes.items()]
+
+    questions = [
+        inquirer.Checkbox('models',
+                        message='Select the models you want to document: (Press Spacebar to select, Enter to confirm) ',
+                        choices=options,
+                        ),
+    ]
+
+    answers = inquirer.prompt(questions)
+
+    selected_nodes = dict(answers['models']).items()
+    ### Model Selection ###
+
+    nodes_to_process = [pair for pair in selected_nodes if should_write_doc(env, pair)]
+
+    #Assigning generated .yml files to nodes
+    for node in nodes_to_process:
+        if node[1].patch_path is None:
+            node[1].patch_path = os.path.join(env.base_path, os.path.dirname(node[1].original_file_path), node[1].name + ".yml")
     
     summarized_nodes = await asyncio.gather(*[open_ai_summarize(env, r_deps, pair[1]) for pair in nodes_to_process])
     summarized_nodes = [node for node in summarized_nodes if node is not None]
@@ -596,7 +723,8 @@ async def main(argv) -> int:
     for patch_path, group in itertools.groupby(sorted(summarized_nodes, key=lambda x: x.patch_path), key=lambda x: x.patch_path):
         insert_docs(env, patch_path, list(group))
 
-    print("Success! Make sure to run `dbt docs generate`.")
+    #print("Success! Make sure to run `dbt docs generate`.")
+    run_dbt_docs_generate(args_env.working_directory)
     return 0
 
 async def async_main(argv):
@@ -609,4 +737,5 @@ def run_async_main():
     asyncio.run(async_main(sys.argv[1:]))
 
 if __name__ == "__main__":
-    run_async_main(sys.argv[1:])
+    run_async_main(sys.argv[1:])        
+    run_async_main()

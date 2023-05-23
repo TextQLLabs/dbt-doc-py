@@ -2,10 +2,10 @@ from setuptools import setup, find_packages
 
 setup(
     name="dbt-doc-py",
-    version="0.1.11",
+    version="0.1.17",
     packages=find_packages(),
     install_requires=[
-    "PyYAML", "dataclasses", "transformers", "asyncio", "argparse", "httpx",
+    "PyYAML", "dataclasses", "transformers", "argparse", "httpx", "inquirer",
     ],
     entry_points={
         "console_scripts": [
