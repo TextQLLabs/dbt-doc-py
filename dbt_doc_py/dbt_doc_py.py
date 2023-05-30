@@ -428,16 +428,16 @@ def insert_docs(env: Env, patch_path_may: Optional[str], nodes: List[SummarizedR
         if model_name in result_map:
             insert_description(env, result_map, model_obj)
 
-    yaml_output = yaml.dump(config, Dumper=yaml.SafeDumper)
-
     with stdout_lock:
         print(f"Adding description to {len(nodes)} models in {path}")
 
     if env.dry_run:
-        print(yaml_output)
+        ## Prints to console
+        YAML().dump(config, sys.stdout)
     else:
+        ## Writes to yaml file
         with open(path, "w") as f:
-            f.write(yaml_output)
+            YAML().dump(config, f)
 
 def read_project_config(base_path: str) -> str:
     path = os.path.join(base_path, "dbt_project.yml")
