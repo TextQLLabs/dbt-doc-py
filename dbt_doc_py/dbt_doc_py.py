@@ -355,8 +355,11 @@ def insert_column_description(env, node_result: SummarizedResult, col_map: Dict[
         with open(md_path, "w") as f:
             f.write(doc_content)
 
+    ## Removing the `columns` from dictionary only to be added after `description`
     model_node_.pop("description", None)
+    columns = model_node_.pop("columns", None)
     model_node_["description"] = f"{{{{ doc(\"{doc_name}\") }}}}"
+    model_node_["columns"] = columns
 
 def insert_description(env, node_map: Dict[str, SummarizedResult], model_node) -> None:    
     model_node_ = model_node
