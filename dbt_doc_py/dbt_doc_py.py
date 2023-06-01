@@ -5,6 +5,7 @@ import sys
 import json
 from enum import Enum
 import yaml
+from ruamel.yaml import YAML
 from dataclasses import dataclass
 import itertools
 import threading
@@ -354,8 +355,11 @@ def insert_column_description(env, node_result: SummarizedResult, col_map: Dict[
         with open(md_path, "w") as f:
             f.write(doc_content)
 
+    ## Removing the `columns` from dictionary only to be added after `description`
     model_node_.pop("description", None)
+    columns = model_node_.pop("columns", None)
     model_node_["description"] = f"{{{{ doc(\"{doc_name}\") }}}}"
+    model_node_["columns"] = columns
 
 def insert_description(env, node_map: Dict[str, SummarizedResult], model_node) -> None:    
     model_node_ = model_node
@@ -424,16 +428,16 @@ def insert_docs(env: Env, patch_path_may: Optional[str], nodes: List[SummarizedR
         if model_name in result_map:
             insert_description(env, result_map, model_obj)
 
-    yaml_output = yaml.dump(config, Dumper=yaml.SafeDumper)
-
     with stdout_lock:
         print(f"Adding description to {len(nodes)} models in {path}")
 
     if env.dry_run:
-        print(yaml_output)
+        ## Prints to console
+        YAML().dump(config, sys.stdout)
     else:
+        ## Writes to yaml file
         with open(path, "w") as f:
-            f.write(yaml_output)
+            YAML().dump(config, f)
 
 def read_project_config(base_path: str) -> str:
     path = os.path.join(base_path, "dbt_project.yml")

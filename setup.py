@@ -5,7 +5,7 @@ setup(
     version="0.1.17",
     packages=find_packages(),
     install_requires=[
-    "PyYAML", "dataclasses", "transformers", "argparse", "httpx", "inquirer",
+    "PyYAML", "dataclasses", "transformers", "argparse", "httpx", "inquirer", "ruamel.yaml",
     ],
     entry_points={
         "console_scripts": [
