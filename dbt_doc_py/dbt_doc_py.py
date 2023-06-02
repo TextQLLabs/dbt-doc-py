@@ -907,6 +907,5 @@ def run_async_main():
     asyncio.run(async_main(sys.argv[1:]))
 
 if __name__ == "__main__":
-    #run_async_main(sys.argv[1:])    
-    sys.argv[1:] = ["--working-directory", "C:\\Users\\Lenin\\Documents\\Development\\TextQL\\projects\\dbt_test"]
+    run_async_main(sys.argv[1:])    
     run_async_main()
