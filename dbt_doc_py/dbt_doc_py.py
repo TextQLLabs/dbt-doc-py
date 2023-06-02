@@ -252,7 +252,7 @@ async def run_openai_request(env: Env, prompt: str) -> str:
         temp = 0.2
 
         base_req = OAIRequest(
-            model="text-davinci-003", prompt=prompt, temperature=temp, max_tokens=1000
+            model="text-davinci-003", prompt=prompt, temperature=temp, max_tokens=3000
         )
         
         if env.api_key.key:
@@ -644,6 +644,161 @@ def run_dbt_docs_generate(path_to_dbt_project, arg_dbtDocGen):
     else:
         print("DBT docs generation is turned off... Make sure to run `dbt docs generate` before and after running this tool.")
 
+### Metrics ###
+async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
+    for node_name, node_metadata in selected_nodes:
+        print("Generating metrics for model: " + node_name)        
+
+        # Get the path to the .yml file
+        yaml_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), "tql_generated_metric_" + node_metadata.name + '_')
+
+        try:
+            catalog_path = os.path.join(env.base_path, "target", "catalog.json")
+            catalog = getCatalog(catalog_path)
+        except Exception as e:
+            print("catalog.json deserialization failed")
+            raise e
+
+        # Extract column names
+        column_list = []
+        for model_name, columns in catalog.items():
+            if model_name == node_metadata.name:
+                column_list = [{'name': col_name} for col_name in columns]
+
+        #Asking the user for a base requirement for the metric
+        promptDes = promptDesignMetrics(node_metadata, column_list)
+        res1 = await run_openai_request(env, promptDes)
+        queries = [block.strip() for block in res1.split(";")]
+        
+        # Create the data structure for the YAML file
+        counter = 1
+        for rawquery in queries:
+            metric_name, query = rawquery.split(":")
+            prompt = promptGenMetrics(node_metadata, column_list, query, metric_name)
+
+            #Call OpenAI API
+            result = await run_openai_request(env, prompt)
+            result = result.replace("\\n", "").replace("\\\\", "")
+
+            # Write the data structure to the YAML file
+            #with open(yaml_file_path, 'w') as yaml_file:
+            #    yaml.dump(result, yaml_file, default_flow_style=False)
+            with open(yaml_file_path + str(counter) + '.yml', 'w') as yaml_file:
+                yaml_file.write(result)
+            counter += 1
+
+        print(f"Metrics YAML file successfully generated at {yaml_file_path}!")
+
+def promptDesignMetrics(node: NodeMetadata, column_list: List[str]):
+    prompt = f"""You are a data analyst that receives the structure of a DBT model/table and outputs statements for the generation of DBT metrics and dimension for the model/table.
+    You are given the metadata of a DBT model and a list of columns in that model.
+    You return three statements separated by this character: ';'
+    Each statement is a prompt for the generation of a DBT metric and/or dimension that will be done by another LLM. You also should return the name of the metric that you intend to create with the prompt.
+    You should separate the name of the metric from the prompt with this character: ':'
+
+    Generic Example 1:
+
+    Input:
+    model: dim_customers
+    model_description: A table containing all customers
+    sql_query: SELECT * FROM dim_customers
+    columns: ['customer_id', 'customer_name', 'customer_email', 'customer_phone', 'customer_address', 'customer_city', 'customer_state', 'customer_country', 'lifetime_value', 'is_paying', 'company_name', 'signup_date', 'plan']
+    
+    Output: 
+    new_customers:new customers using the product by month and half of the month;
+    total_revenue:total revenue (lifetime_value) by the following dimensions customer_name,customer_country, and company_name;
+    customers_count:number of customers by the following dimensions customer_city,customer_country, and company_name;
+
+    Complete the following. Return the three statements separated by ; with no ther comment.
+    model: {node.name}
+    columns: {column_list}
+    model_description: {node.description}
+    sql_query: {node.raw_code}
+    """
+    return prompt
+
+def promptGenMetrics(node: NodeMetadata, column_list: List[str], query: str, metricName: str):
+    prompt = f"""You are an expert SQL analyst with a large knowledge of the DBT platform that takes natural language input and outputs DBT metrics in YAML format.
+    You are given the metadata of a DBT model, the list of columns in that model, and the name of the metric.
+
+    Generic Example 1:
+
+    model: dim_customers
+    model_description: A table containing all customers
+    sql_query: SELECT * FROM dim_customers
+    columns: ['customer_id', 'customer_name', 'customer_email', 'customer_phone', 'customer_address', 'customer_city', 'customer_state', 'customer_country', 'lifetime_value', 'is_paying', 'company_name', 'signup_date', 'plan']
+    metric_name: new_customers
+    Input: new customers using the product in half of the month.
+    YAML Output:version: 2
+
+metrics:
+  - name: new_customers
+    label: New Customers
+    model: ref('dim_customers')
+    description: "The 14 day rolling count of paying customers using the product"
+
+    calculation_method: count_distinct
+    expression: customer_id 
+
+    dimensions:
+      - plan
+      - customer_country
+        
+    window:
+    count: 14
+    period: day
+
+    filters:
+      - field: is_paying
+        operator: 'is'
+        value: 'true'
+      - field: lifetime_value
+        operator: '>='
+        value: '100'
+      - field: company_name
+        operator: '!='
+        value: "'Acme, Inc'"
+      - field: signup_date
+        operator: '>='
+        value: "'2020-01-01'"
+
+
+    Generic Example 2:
+
+    model: dim_customers
+    model_description: A table containing all customers
+    sql_query: SELECT * FROM dim_customers
+    columns: ['customer_id', 'customer_name', 'customer_email', 'customer_phone', 'customer_address', 'customer_city', 'customer_state', 'customer_country', 'lifetime_value', 'is_paying', 'company_name', 'signup_date', 'plan']
+    metric_name: average_revenue_per_customer
+    Input: average revenue per customer, segment data per plan and country.
+    YAML Output:version: 2
+
+metrics:
+  - name: average_revenue_per_customer
+    label: Average Revenue Per Customer
+    model: ref('dim_customers')
+    description: "The average revenue received per customer"
+
+    calculation_method: average
+    expression: lifetime_value 
+
+    dimensions:
+      - plan
+      - customer_country
+        
+
+    Complete the following. Use YAML format and include no other commentary.
+    model: {node.name}
+    columns: {column_list}
+    model_description: {node.description}
+    sql_query: {node.raw_code}
+    metric_name: {metricName}
+    Input: {query}
+    YAML Output:"""
+    return prompt
+
+### Metrics ###
+
 async def main(argv) -> int:    
     try:
         args_env = parse_args(sys.argv[1:])
@@ -727,8 +882,14 @@ async def main(argv) -> int:
     for patch_path, group in itertools.groupby(sorted(summarized_nodes, key=lambda x: x.patch_path), key=lambda x: x.patch_path):
         insert_docs(env, patch_path, list(group))
 
+    # Metrics generation    
+    makeMetrics = input("Do you want to generate the metrics for the selected models? Y/n: ")
+    if makeMetrics.lower() == 'y':
+        await generateMetrics(env, nodes_to_process)        
+    # Metrics generation
+
     #print("Success! Make sure to run `dbt docs generate`.")
-    run_dbt_docs_generate(args_env.working_directory)
+    run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
     return 0
 
 async def async_main(argv):
@@ -741,5 +902,5 @@ def run_async_main():
     asyncio.run(async_main(sys.argv[1:]))
 
 if __name__ == "__main__":
-    run_async_main(sys.argv[1:])        
+    run_async_main(sys.argv[1:])    
     run_async_main()
