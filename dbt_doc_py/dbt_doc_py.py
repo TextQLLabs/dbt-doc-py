@@ -650,7 +650,7 @@ async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
         print("Generating metrics for model: " + node_name)        
 
         # Get the path to the .yml file
-        yaml_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), "tql_generated_metric_" + node_metadata.name + '_')
+        #yaml_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), "tql_generated_metric_" + node_metadata.name + '_')
 
         try:
             catalog_path = os.path.join(env.base_path, "target", "catalog.json")
@@ -671,21 +671,20 @@ async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
         queries = [block.strip() for block in res1.split(";")]
         
         # Create the data structure for the YAML file
-        counter = 1
         for rawquery in queries:
             metric_name, query = rawquery.split(":")
             prompt = promptGenMetrics(node_metadata, column_list, query, metric_name)
+
+            print("Generating metric: " + metric_name + "\n" + "With the prompt: " + query)
 
             #Call OpenAI API
             result = await run_openai_request(env, prompt)
             result = result.replace("\\n", "").replace("\\\\", "")
 
             # Write the data structure to the YAML file
-            #with open(yaml_file_path, 'w') as yaml_file:
-            #    yaml.dump(result, yaml_file, default_flow_style=False)
-            with open(yaml_file_path + str(counter) + '.yml', 'w') as yaml_file:
+            yaml_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), "tql_genmetric_" + metric_name + '.yml')            
+            with open(yaml_file_path, 'w') as yaml_file:
                 yaml_file.write(result)
-            counter += 1
 
         print(f"Metrics YAML file successfully generated at {yaml_file_path}!")
 
