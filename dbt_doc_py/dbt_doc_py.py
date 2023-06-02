@@ -252,11 +252,11 @@ async def run_openai_request(env: Env, prompt: str) -> str:
         temp = 0.2
 
         base_req = OAIRequest(
-            model="text-davinci-003", prompt=prompt, temperature=temp, max_tokens=3000
+            model="text-davinci-003", prompt=prompt, temperature=temp, max_tokens=2000            
         )
         
         if env.api_key.key:
-            url = "https://api.openai.com/v1/completions"
+            url = "https://api.openai.com/v1/completions"            
             headers = {
                 "Authorization": f"Bearer {env.api_key.key}",
                 "Content-Type": "application/json",
@@ -273,6 +273,7 @@ async def run_openai_request(env: Env, prompt: str) -> str:
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, data=data, timeout=60)        
         
+        #print(str(response.json()))
         result = OAIResponse(choices=[OAIChoice(text=c["text"]) for c in response.json()["choices"]])
 
     except Exception as e:
@@ -746,10 +747,6 @@ metrics:
     dimensions:
       - plan
       - customer_country
-        
-    window:
-    count: 14
-    period: day
 
     filters:
       - field: is_paying
@@ -906,5 +903,5 @@ def run_async_main():
     asyncio.run(async_main(sys.argv[1:]))
 
 if __name__ == "__main__":
-    run_async_main(sys.argv[1:])        
+    run_async_main(sys.argv[1:])    
     run_async_main()
