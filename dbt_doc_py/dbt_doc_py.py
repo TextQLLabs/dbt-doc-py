@@ -672,19 +672,23 @@ async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
         
         # Create the data structure for the YAML file
         for rawquery in queries:
-            metric_name, query = rawquery.split(":")
-            prompt = promptGenMetrics(node_metadata, column_list, query, metric_name)
+            if len(rawquery.split(":")) == 2:
+                metric_name, query = rawquery.split(":")
+                prompt = promptGenMetrics(node_metadata, column_list, query, metric_name)
 
-            print("Generating metric: " + metric_name + "\n" + "With the prompt: " + query)
+                print("Generating metric: " + metric_name + "\n" + "With the prompt: " + query)
 
-            #Call OpenAI API
-            result = await run_openai_request(env, prompt)
-            result = result.replace("\\n", "").replace("\\\\", "")
+                #Call OpenAI API
+                result = await run_openai_request(env, prompt)
+                result = result.replace("\\n", "").replace("\\\\", "")
 
-            # Write the data structure to the YAML file
-            yaml_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), "tql_genmetric_" + metric_name + '.yml')            
-            with open(yaml_file_path, 'w') as yaml_file:
-                yaml_file.write(result)
+                # Write the data structure to the YAML file
+                yaml_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), "tql_genmetric_" + metric_name + '.yml')            
+                with open(yaml_file_path, 'w') as yaml_file:
+                    yaml_file.write(result)
+            else:
+                print(f"Unexpected format: {item}")
+                continue
 
         print(f"Metrics YAML file successfully generated at {yaml_file_path}!")
 
@@ -713,6 +717,7 @@ def promptDesignMetrics(node: NodeMetadata, column_list: List[str]):
     columns: {column_list}
     model_description: {node.description}
     sql_query: {node.raw_code}
+    Output:
     """
     return prompt
 
@@ -884,7 +889,8 @@ async def main(argv) -> int:
     # Metrics generation    
     makeMetrics = input("Do you want to generate the metrics for the selected models? Y/n: ")
     if makeMetrics.lower() == 'y':
-        await generateMetrics(env, nodes_to_process)        
+        await generateMetrics(env, nodes_to_process)
+        #await generateMetrics(env, selected_nodes)
     # Metrics generation
 
     #print("Success! Make sure to run `dbt docs generate`.")
@@ -901,5 +907,6 @@ def run_async_main():
     asyncio.run(async_main(sys.argv[1:]))
 
 if __name__ == "__main__":
-    run_async_main(sys.argv[1:])    
+    #run_async_main(sys.argv[1:])    
+    sys.argv[1:] = ["--working-directory", "C:\\Users\\Lenin\\Documents\\Development\\TextQL\\projects\\dbt_test"]
     run_async_main()
