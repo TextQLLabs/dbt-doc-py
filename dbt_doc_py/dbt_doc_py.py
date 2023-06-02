@@ -687,7 +687,6 @@ async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
                 with open(yaml_file_path, 'w') as yaml_file:
                     yaml_file.write(result)
             else:
-                print(f"Unexpected format: {item}")
                 continue
 
         print(f"Metrics YAML file successfully generated at {yaml_file_path}!")
@@ -907,5 +906,5 @@ def run_async_main():
     asyncio.run(async_main(sys.argv[1:]))
 
 if __name__ == "__main__":
-    run_async_main(sys.argv[1:])    
+    run_async_main(sys.argv[1:])        
     run_async_main()
