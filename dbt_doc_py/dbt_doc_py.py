@@ -1,3 +1,5 @@
+from NLP.OpenAI import OpenAI
+from NLP.Anthropic import Anthropic
 from typing import Optional, Dict, List, Tuple
 import inquirer
 import os
@@ -9,10 +11,8 @@ from ruamel.yaml import YAML
 from dataclasses import dataclass
 import itertools
 import threading
-from transformers import GPT2Tokenizer, AutoTokenizer
 import asyncio
 import argparse
-import httpx
 import subprocess
 
 stdout_lock = threading.Lock()
@@ -166,64 +166,6 @@ class ArgsConfig:
         self.dbtDocGen = dbtDocGen
         self.dry_run = dry_run
 
-def mk_prompt(reverse_deps: Dict[str, List[str]], node: NodeMetadata) -> str:
-    deps = ",".join(node.depends_on.nodes) if node.depends_on and node.depends_on.nodes else "(No dependencies)"
-    r_deps = (
-        ",".join(reverse_deps[node.unique_id])
-        if node.unique_id in reverse_deps
-        else "Not used by any other models"
-    )
-    staging = "\nThis is a staging model. Be sure to mention that in the summary.\n" if "staging" in node.fqn else ""
-    raw_code = node.raw_code if node.raw_code else ""
-
-    prompt = f"""Write markdown documentation to explain the following DBT model. Be clear and informative, but also accurate. The only information available is the metadata below.
-    Explain the raw SQL, then explain the dependencies. Do not list the SQL code or column names themselves; an explanation is sufficient.
-
-    Model name: {node.name}
-    Raw SQL code: {raw_code}
-    Depends on: {deps}
-    Depended on by: {r_deps}
-    {staging}
-    First, generate a human-readable name for the table as the title (i.e. fct_orders -> # Orders Fact Table).
-    Then, describe the dependencies (both model dependencies and the warehouse tables used by the SQL.) Do this under ## Dependencies.
-    Then, describe what other models reference this model in ## How it's used
-    Then summarize the model logic in ## Summary.
-    """
-    return prompt
-
-def mk_column_prompt(node: NodeMetadata, col: ColumnMetadata, documented_nodes: Dict[str, NodeMetadata]) -> str:
-    # Check if the current column depends on any documented nodes
-    deps = node.depends_on.nodes if node.depends_on and node.depends_on.nodes else []
-    inherited_docs = []
-    for dep in deps:
-        if dep in documented_nodes:
-            # Add the name and description of each column in the dependent node to the list of inherited docs
-            for dep_col in documented_nodes[dep].columns.values():
-                if dep_col.name in dep_col.depends_on.columns:
-                    inherited_docs.append(dep_col.description)
-
-    # Combine the inherited docs into a single string
-    inherited_docs_str = "\n\n".join(inherited_docs)
-    inheritance = f"""This column is inherited from another model. Use this column's documentation from the original model 
-    as context for writing the requested one and be sure to mention it alongside the name of the original model. 
-    Inherited documentation: {inherited_docs_str} """ if inherited_docs_str else ""
-
-    prompt = f"""Write markdown documentation to explain the following DBT column in the context of the parent model and SQL code. Be clear and informative, but also accurate. The only information available is the metadata below.
-    Do not list the SQL code or column names themselves; an explanation is sufficient.
-
-    Column Name: {col.name}
-    Parent Model name: {node.name}
-    Raw SQL code: {node.raw_code}
-    {inheritance}
-
-    First, explain the meaning of the column in plain, non-technical English. Then, explain how the column is extracted in code.
-    If the column is calculated from other columns, explain how the calculation works.
-    If the column is derived from other columns, explain how those columns are extracted.
-    If the column is a inherited from another model, mention the original model and use the provided Inherited documentation (If there is any).
-    Remember not to list the SQL code, brackets, or the word config (Jinja code); an explanation is sufficient.
-    """
-    return prompt
-
 class SummarizedResult:
     def __init__(
         self,
@@ -240,61 +182,14 @@ class SummarizedResult:
         self.name = name
 
 class TooManyTokensError(Exception):
-    pass
-
-async def run_openai_request(env: Env, prompt: str) -> str:
-    resGPT=""
-    try:
-        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")        
-        #tokens = tokenizer.encode(prompt)        
-        tokens = tokenizer(prompt, truncation=True, max_length=2000)        
-
-        if len(tokens) + 1000 >= 4096:
-            raise TooManyTokensError()
-
-        temp = 0.2
-
-        base_req = OAIRequest(
-            model="text-davinci-003", prompt=prompt, temperature=temp, max_tokens=1000            
-        )
-        
-        if env.api_key.key:
-            url = "https://api.openai.com/v1/completions"            
-            headers = {
-                "Authorization": f"Bearer {env.api_key.key}",
-                "Content-Type": "application/json",
-            }
-            data = json.dumps(base_req.__dict__)
-        else:
-            url = "https://api.textql.com/api/oai"
-            headers = {"Content-Type": "application/json"}
-            body = OAIRequestWithUserInfo(prompt=prompt, email=env.api_key.user_info)
-            data = json.dumps(body.__dict__)
-            print(f"Using TextQL API with user info {env.api_key.user_info}")
-            print(f"Data {data}")
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, data=data, timeout=60)        
-        
-        #print(str(response.json()))
-        if 'error' in response.json():
-            print(response.json()['error']['message'])            
-        else:
-            result = OAIResponse(choices=[OAIChoice(text=c["text"]) for c in response.json()["choices"]])
-            resGPT = result.choices[0].text
-
-    except Exception as e:
-        print(e)
-        #raise e    
-
-    return resGPT
-    #return "respuesta GPT"
+    pass 
 
 async def gen_column_summaries(env: Env, node: NodeMetadata) -> Dict[str, str]:
     prefix = "[ai-gen] "
     
     async def mapper(k: str, column: ColumnMetadata) -> Tuple[str, str]:
-        result = await run_openai_request(env, mk_column_prompt(node, column, documented_nodes))    
+        #result = await OpenAI.run_request(env, OpenAI.mk_column_prompt(node, column, documented_nodes))    
+        result = await Anthropic.run_request(env, Anthropic.mk_column_prompt(node, column, documented_nodes))    
         return (k, prefix + result)
     
     filtered_columns = {k: v for k, v in node.columns.items() if v.description == ""}
@@ -311,7 +206,8 @@ async def open_ai_summarize(env: Env, reverse_deps: Dict[str, List[str]], node: 
 
     try:
         tbl_result, col_result = await asyncio.gather(
-            run_openai_request(env, mk_prompt(reverse_deps, node)),
+            #OpenAI.run_request(env, OpenAI.mk_prompt(reverse_deps, node)),
+            Anthropic.run_request(env, Anthropic.mk_prompt(reverse_deps, node)),
             gen_column_summaries(env, node)
         )
         return SummarizedResult(
@@ -648,10 +544,12 @@ def run_dbt_docs_generate(path_to_dbt_project, arg_dbtDocGen):
             print("Running DBT docs generate...")
             subprocess.check_output(['dbt', 'docs', 'generate'], cwd=path_to_dbt_project)
             print("DBT docs successfully generated!")
+            return True
         except subprocess.CalledProcessError as e:
             print("Could not generate DBT docs.")
             print("Error:")
             print(e.output)
+            return False
     else:
         print("DBT docs generation is turned off... Make sure to run `dbt docs generate` before and after running this tool.")
 
@@ -659,9 +557,6 @@ def run_dbt_docs_generate(path_to_dbt_project, arg_dbtDocGen):
 async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
     for node_name, node_metadata in selected_nodes:
         print("Generating metrics for model: " + node_name)        
-
-        # Get the path to the .yml file
-        #yaml_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), "tql_generated_metric_" + node_metadata.name + '_')
 
         try:
             catalog_path = os.path.join(env.base_path, "target", "catalog.json")
@@ -677,23 +572,26 @@ async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
                 column_list = [{col_name : col_type} for col_name, col_type in zip(column_names, column_types)]
 
         #Asking the user for a base requirement for the metric
-        promptDes = promptDesignMetrics(node_metadata, column_list)
-        #print("promptDes: " + promptDes)
-        res1 = await run_openai_request(env, promptDes)
-        #print('Res GPT design: ' + res1)
-        queries = [block.strip() for block in res1.split(";")]
-        #print('List of queries: ' + str(queries))
+        #promptDes = OpenAI.promptDesignMetrics(node_metadata, column_list)
+        promptDes = Anthropic.promptDesignMetrics(node_metadata, column_list)
+        
+        #res1 = await OpenAI.run_request(env, promptDes)
+        res1 = await Anthropic.run_request(env, promptDes)
+        
+        queries = [block.strip() for block in res1.split(";")]        
         
         # Create the data structure for the YAML file
         for rawquery in queries:
             if len(rawquery.split(":")) == 2:
                 metric_name, query = rawquery.split(":")
-                prompt = promptGenMetrics(node_metadata, column_list, query, metric_name)
+                #prompt = OpenAI.promptGenMetrics(node_metadata, column_list, query, metric_name)
+                prompt = Anthropic.promptGenMetrics(node_metadata, column_list, query, metric_name)
 
                 print("Generating metric: " + metric_name + "\n" + "With the prompt: " + query)
 
                 #Call OpenAI API
-                result = await run_openai_request(env, prompt)
+                #result = await OpenAI.run_request(env, prompt)
+                result = await Anthropic.run_request(env, prompt)
                 result = result.replace("\\n", "").replace("\\\\", "")
 
                 # Write the data structure to the YAML file
@@ -702,8 +600,10 @@ async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
                     yaml_file.write(result)                
                     print(f"Metrics YAML file successfully generated at {yaml_file_path}!")
 
-                sqlPrompt = promptGenMetricSQL(metric_name, result)
-                sqlText = await run_openai_request(env, sqlPrompt)
+                #sqlPrompt = OpenAI.promptGenMetricSQL(metric_name, result)
+                #sqlText = await OpenAI.run_request(env, sqlPrompt)
+                sqlPrompt = Anthropic.promptGenMetricSQL(metric_name, result)
+                sqlText = await Anthropic.run_request(env, sqlPrompt)
 
                 # Write the query in to a SQL file
                 sql_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), "metric_" + metric_name + '.sql')            
@@ -714,302 +614,19 @@ async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
             else:
                 continue        
 
-def promptDesignMetrics(node: NodeMetadata, column_list: List[str]):
-    prompt = f"""You are a data analyst that receives the structure of a DBT model/table and outputs statements for the generation of DBT metrics and dimension for the model/table.
-    You are given the metadata of a DBT model and a list of columns and data types in that model.
-    You return three statements separated by this character: ';'
-    Remember, just 3 statements! and the final one should not have the character: ';' at the end.
-    Each statement is a prompt for the generation of a DBT metric and/or dimension that will be done by another LLM. You also should return the name of the metric that you intend to create with the prompt.
-    You should separate the name of the metric from the prompt with this character: ':'. Remember, the name of the metric should always be at the left side of the ':', and the prompt at the rigt one.
-    The generated metrics should be diverse and helpful for the analysis of the model/table.
-    These are some guidelines for the generation of metrics:
-    {metricsGuidelines}
-
-    These are some examples of generation of statements for the generation of metrics:
-
-    Generic Example 1:
-
-    Input:
-    model: dim_customers
-    model_description: A table containing all customers
-    sql_query: SELECT * FROM dim_customers
-    columns: ['customer_id', 'customer_name', 'customer_email', 'customer_phone', 'customer_address', 'customer_city', 'customer_state', 'customer_country', 'lifetime_value', 'is_paying', 'company_name', 'signup_date', 'plan']
-    
-    Output:
-    new_customers:new customers using the product by month and half of the month;
-    total_revenue:total revenue (lifetime_value) by the following dimensions customer_name, customer_country, and company_name;
-    customers_count:number of customers by the following dimensions customer_city, customer_country, and company_name
-
-    Generic Example 2:
-
-    Input:
-    model: order_events
-    model_description: model used by the finance team to better understand revenue but inconsistencies in how it's reported have led to requests that the data team centralize the definition in the dbt repo.
-    sql_query: SELECT * FROM order_events
-    columns: ['event_date', 'order_id', 'order_country', 'order_status', 'customer_id', 'customer_status', 'amount']
-    
-    Output:
-    total_revenue:Total revenue by year and country;
-    total_orders:Total orders by customer status and country;
-    average_revenue:Average revenue by year and country
-
-    Complete the following. Return the three statements separated by ; with no ther comment.
-    model: {node.name}
-    model_description: {node.description}
-    sql_query: {node.raw_code}
-    columns: {column_list}    
-    Output:
-    """
-    return prompt
-
-def promptGenMetrics(node: NodeMetadata, column_list: List[str], query: str, metricName: str):
-    prompt = f"""You are an expert SQL analyst with a large knowledge of the DBT platform that takes natural language input and outputs DBT metrics in YAML format.
-    You are given the metadata of a DBT model, the list of columns and data types in that model, and the name of the metric.
-    
-    follow the following guidelines to generate the metric:
-    {metricsGuidelines}
-
-    Some examples of metric generation are:
-
-    Generic Example 1:
-
-    model: dim_customers
-    model_description: A table containing all customers
-    sql_query: SELECT * FROM dim_customers
-    columns: ['customer_id', 'customer_name', 'customer_email', 'customer_phone', 'customer_address', 'customer_city', 'customer_state', 'customer_country', 'lifetime_value', 'is_paying', 'company_name', 'signup_date', 'plan']
-    metric_name: new_customers
-    Input: new customers using the product in half of the month.
-    YAML Output:version: 2
-
-metrics:
-  - name: new_customers
-    label: New Customers
-    model: ref('dim_customers')
-    description: "The 14 day rolling count of paying customers using the product"
-
-    calculation_method: count_distinct
-    expression: customer_id 
-
-    dimensions:
-      - plan
-      - customer_country
-
-    filters:
-      - field: is_paying
-        operator: 'is'
-        value: 'true'
-      - field: lifetime_value
-        operator: '>='
-        value: '100'
-      - field: company_name
-        operator: '!='
-        value: "'Acme, Inc'"
-      - field: signup_date
-        operator: '>='
-        value: "'2020-01-01'"
-
-
-    Generic Example 2:
-
-    model: dim_customers
-    model_description: A table containing all customers
-    sql_query: SELECT * FROM dim_customers
-    columns: ['customer_id', 'customer_name', 'customer_email', 'customer_phone', 'customer_address', 'customer_city', 'customer_state', 'customer_country', 'lifetime_value', 'is_paying', 'company_name', 'signup_date', 'plan']
-    metric_name: average_revenue_per_customer
-    Input: average revenue per customer, segment data per plan and country.
-    YAML Output:version: 2
-
-metrics:
-  - name: average_revenue_per_customer
-    label: Average Revenue Per Customer
-    model: ref('dim_customers')
-    description: "The average revenue received per customer"
-
-    calculation_method: average
-    expression: lifetime_value 
-
-    dimensions:
-      - plan
-      - customer_country
-        
-
-    Complete the following. Use YAML format and include no other commentary.
-    model: {node.name}
-    columns: {column_list}
-    model_description: {node.description}
-    sql_query: {node.raw_code}
-    metric_name: {metricName}
-    Input: {query}
-    YAML Output:"""
-    return prompt
-
-def promptGenMetricSQL(metric: str, metricName: str):
-    prompt = f"""You are an expert SQL analyst with a large knowledge of the DBT platform that takes DBT metrics in YAML format as input and outputs queries in SQL format.
-    You are given the definition and the name of the metric.
-
-    Generic Example 1:
-    
-    metric_name: new_customers    
-    metric:version: 2
-
-metrics:
-  - name: new_customers
-    label: New Customers
-    model: ref('dim_customers')
-    description: "The 14 day rolling count of paying customers using the product"
-
-    calculation_method: count_distinct
-    expression: customer_id 
-
-    dimensions:
-      - plan
-      - customer_country
-
-    filters:
-      - field: is_paying
-        operator: 'is'
-        value: 'true'
-      - field: lifetime_value
-        operator: '>='
-        value: '100'
-      - field: company_name
-        operator: '!='
-        value: "'Acme, Inc'"
-      - field: signup_date
-        operator: '>='
-        value: "'2020-01-01'"
-
-    SQL Output:select * 
-from {{{{ metrics.calculate(
-    metric('new_customers'),    
-    dimensions=['plan', 'customer_country']    
-) }}}}
-
-
-    Generic Example 2:
-    
-    metric_name: average_revenue_per_customer    
-    metric:version: 2
-
-metrics:
-  - name: average_revenue_per_customer
-    label: Average Revenue Per Customer
-    model: ref('dim_customers')
-    description: "The average revenue received per customer"
-
-    calculation_method: average
-    expression: lifetime_value 
-
-    dimensions:
-      - plan
-      - customer_country
-        
-    SQL Output:select * 
-from {{{{ metrics.calculate(
-    metric('average_revenue_per_customer'),    
-    dimensions=['plan', 'customer_country']    
-) }}}}
-
-    Complete the following. Use SQL format and include no other commentary.
-    Keep in mind that between the from clause and the metrics.calculate() clause, 
-    you should use two brackets for opening and two for closing (For instance: from <double brackets> metrics.calculate(parameters) <double brackets>).
-    metric_name: {metricName}
-    metric: {metric}
-    SQL Output:"""
-    return prompt
-
-metricsGuidelines = """General Information:
-    A metric is an aggregation over a table that supports zero or more dimensions.
-    Metric names must:
-        contain only letters, numbers, and underscores (no spaces or special characters)
-        begin with a letter
-        contain no more than 250 characters
-
-
-    Available properties (Define aspects of the metric)
-    Field: name
-    Description: A unique identifier for the metric
-    Example: new_customers
-    ---
-    Field: model
-    Description: The dbt model that powers this metric
-    Example: dim_customers
-    ---
-    Field: label
-    Description: A short for name / label for the metric
-    Example: New Customers
-    ---
-    Field: description
-    Description: Long form, human-readable description for the metric
-    Example: The number of customers who....
-    ---
-    Field: calculation_method
-    Description: The method of calculation (aggregation or derived) that is applied to the expression
-    Example: count_distinct
-    ---
-    Field: expression
-    Description: The expression to aggregate/calculate over
-    Example: user_id, cast(user_id as int)
-    Guidelines: You can't use * as expression in the metric. It can be used only as a SQL expression (for instance count(*))
-                For expressions that needs math operations (sum,average,median) make sure you are using a numeric column (acoording the provided data type of the column).
-    ---
-    Field: timestamp
-    Description: 
-    Example: signup_date
-    ---
-    Field: time_grains
-    Description: One or more "grains" at which the metric can be evaluated. For more information, see the "Custom Calendar" section.
-    Example: [day, week, month, quarter, year]
-    ---
-    Field: dimensions
-    Description: A list of dimensions to group or filter the metric by
-    Example: [plan, country]
-    ---
-    Field: window
-    Description: A dictionary for aggregating over a window of time. Used for rolling metrics such as 14 day rolling average. Acceptable periods are: [day,week,month, year, all_time]
-    Example: {{count: 14, period: day}}
-    ---
-    Field: filters
-    Description: A list of filters to apply before calculating the metric
-    Guideline: Filters should be defined as a list of dictionaries that define predicates for the metric. Filters are combined using AND clauses. For more control, users can (and should) include the complex logic in the model powering the metric.
-            All three properties (field, operator, value) are required for each defined filter.
-    ---
-    
-
-
-    Available calculation methods (The method of calculation (aggregation or derived) that is applied to the expression)
-    Method: count
-    Description: This metric type will apply the count aggregation to the specified field
-    ---
-    Method: count_distinct
-    Description: This metric type will apply the count aggregation to the specified field, with an additional distinct statement inside the aggregation
-    ---
-    Method: sum
-    Description: This metric type will apply the sum aggregation to the specified field
-    ---
-    Method: average
-    Description: This metric type will apply the average aggregation to the specified field
-    ---
-    Method: min
-    Description: This metric type will apply the min aggregation to the specified field
-    ---
-    Method: max
-    Description: This metric type will apply the max aggregation to the specified field
-    ---
-    Method: median
-    Description: This metric type will apply the median aggregation to the specified field, or an alternative percentile_cont aggregation if median is not available
-    ---
-    Method: derived
-    Description: This metric type is defined as any non-aggregating calculation of 1 or more metrics
-    ---
-    """
 ### Metrics ###
 
-async def main(argv) -> int:    
+async def main(argv) -> int:
+    DDG_flag = False    
     try:
         args_env = parse_args(sys.argv[1:])
 
-        run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+        DDG_flag = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+        while DDG_flag == False:
+            if (input("Would you like to try again? (y/n) ").lower() == "y"):
+                DDG_flag = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+            else:
+                DDG_flag = True
 
         manifest_path = os.path.join(args_env.working_directory, "target", "manifest.json")        
 
@@ -1095,8 +712,13 @@ async def main(argv) -> int:
         #await generateMetrics(env, selected_nodes)
     # Metrics generation
 
-    #print("Success! Make sure to run `dbt docs generate`.")
-    run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+    DDG_flag = False
+    DDG_flag = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+    while DDG_flag == False:
+        if (input("Would you like to try again? (y/n) ").lower() == "y"):
+            DDG_flag = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+        else:
+            DDG_flag = True
     return 0
 
 async def async_main(argv):
@@ -1109,5 +731,5 @@ def run_async_main():
     asyncio.run(async_main(sys.argv[1:]))
 
 if __name__ == "__main__":
-    run_async_main(sys.argv[1:])    
+    run_async_main(sys.argv[1:])        
     run_async_main()
