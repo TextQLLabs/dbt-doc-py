@@ -218,7 +218,7 @@ class OpenAI:
                 model="text-davinci-003", prompt=prompt, temperature=temp, max_tokens=1000            
             )
             
-            if env.api_key.key:
+            if hasattr(env.api_key, 'key'):
                 url = "https://api.openai.com/v1/completions"            
                 headers = {
                     "Authorization": f"Bearer {env.api_key.key}",
@@ -228,9 +228,9 @@ class OpenAI:
             else:
                 url = "https://api.textql.com/api/oai"
                 headers = {"Content-Type": "application/json"}
-                body = OAIRequestWithUserInfo(prompt=prompt, email=env.api_key.user_info)
+                body = OAIRequestWithUserInfo(prompt=prompt, email=env.api_key.email)
                 data = json.dumps(body.__dict__)
-                print(f"Using TextQL API with user info {env.api_key.user_info}")
+                print(f"Using TextQL API with user info {env.api_key.email}")
                 print(f"Data {data}")
             
             async with httpx.AsyncClient() as client:

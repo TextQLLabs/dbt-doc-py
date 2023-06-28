@@ -205,7 +205,8 @@ class Anthropic:
         resGPT=""
         #PRICE_PROMPT = 1.102E-5
         #PRICE_COMPLETION = 3.268E-5        
-        anthropic_client = anthropic.Client(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        #anthropic_client = anthropic.Client(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        anthropic_client = anthropic.Client(api_key=env.api_key.key)
 
         try:
             current_inp = anthropic.HUMAN_PROMPT + prompt + anthropic.AI_PROMPT

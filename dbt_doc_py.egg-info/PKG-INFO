@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: dbt-doc-py
-Version: 0.1.17
+Version: 0.1.25
 Summary: Automatically generate docs for undocumented DBT models.
 Home-page: https://github.com/TextQLLabs/dbt-doc-py.git
 Author: TextQLLabs
