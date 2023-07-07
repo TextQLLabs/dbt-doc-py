@@ -491,4 +491,16 @@ from {{{{ metrics.calculate(
         metric_name: {metricName}
         metric: {metric}
         SQL Output:"""
-        return prompt    
+        return prompt  
+
+    def promptFixMetric(error: str, metric: str):
+        prompt = f"""You are an expert SQL analyst with a large knowledge of the DBT platform that takes natural language input and outputs DBT metrics in YAML format.
+        In a previous request you were given the metadata of a DBT model, the list of columns and data types in that model, and the name of the metric and you returned the content of the metric.
+        The problem is that the metric is not correct and you need to fix it. You are given the error message and the metric.
+        You need to fix the metric so that it follows the following guidelines:        
+        {Anthropic.metricsGuidelines}
+        You should return the content of the fixed metric in YAML format with no other comments or markers.
+        Metric content: {metric}
+        Metric error: {error}
+        Fixed Metric content: """
+        return prompt  

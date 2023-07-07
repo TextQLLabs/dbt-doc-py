@@ -644,9 +644,25 @@ async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
 async def reviewMetrics(errorMessage: str, env: Env):
     filename = re.search(r'Error reading .*?: (.*?) -', errorMessage)
     if filename:
-        file = filename.group(1)
-        file_path = os.path.join(env.base_path, file)
-        print("Error reading file: " + file_path)
+        file = filename.group(1).rstrip().replace("\\\\", "\\")
+        print("Reviewing metrics for file: " + file)
+        file_path = os.path.join(env.base_path, 'models\\', file)
+
+        with open(file_path, "r") as f:
+            contents = f.read()
+
+        if env.llm.lower()[0]=="a":
+            fixPrompt = Anthropic.promptFixMetric(errorMessage, contents)
+            fixedText = await Anthropic.run_request(env, fixPrompt)
+        else:
+            fixPrompt = OpenAI.promptFixMetric(errorMessage, contents)
+            fixedText = await OpenAI.run_request(env, fixPrompt)
+
+        result = fixedText
+
+        with open(file_path, 'w') as yaml_file:
+            yaml_file.write(result)                
+            print(f"Metrics YAML file was successfully rewritten at {file_path}!")
 
 ### Metrics ###
 
@@ -754,16 +770,22 @@ async def main(argv) -> int:
     # Metrics generation
     
     DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)    
-    while DDG_error != "":
-        #if ("Syntax error near line" in DDG_error):
-        #    await reviewMetrics(DDG_error, env)
-        #    DDG_error = ""
-        #    break
-
-        if (input("Would you like to try again? (y/n) ").lower() == "y"):
+    counter = 0
+    while DDG_error != "" and counter < 3:
+        counter += 1
+        if ("Syntax error near line" in DDG_error):
+            await reviewMetrics(DDG_error, env)
+            DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+        elif ("Compilation Error" in DDG_error):
+            await reviewMetrics(DDG_error, env)
+            DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+        elif (input("Would you like to try again? (y/n) ").lower() == "y"):
             DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
         else:
             DDG_error = ""
+
+        if counter == 3:
+            print("Too many errors. Aborting.")
     return 0
 
 async def async_main(argv):
@@ -776,5 +798,5 @@ def run_async_main():
     asyncio.run(async_main(sys.argv[1:]))
 
 if __name__ == "__main__":
-    run_async_main(sys.argv[1:])    
+    run_async_main(sys.argv[1:])
     run_async_main()
