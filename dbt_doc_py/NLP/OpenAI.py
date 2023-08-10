@@ -206,7 +206,7 @@ class OpenAI:
         resGPT=""
         try:
             tokenizer = GPT2Tokenizer.from_pretrained("gpt2")        
-            #tokens = tokenizer.encode(prompt)        
+            
             tokens = tokenizer(prompt, truncation=True, max_length=2000)        
 
             if len(tokens) + 1000 >= 4096:

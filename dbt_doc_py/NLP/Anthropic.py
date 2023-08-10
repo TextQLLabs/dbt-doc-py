@@ -1,5 +1,5 @@
 from typing import Optional, Dict, List
-import os
+#import os
 import anthropic
 
 class OAIRequest:
@@ -203,9 +203,7 @@ class Anthropic:
 
     async def run_request(env: Env, prompt: str) -> str:
         resGPT=""
-        #PRICE_PROMPT = 1.102E-5
-        #PRICE_COMPLETION = 3.268E-5        
-        #anthropic_client = anthropic.Client(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        
         anthropic_client = anthropic.Client(api_key=env.api_key.key)
 
         try:
@@ -215,13 +213,9 @@ class Anthropic:
             promptM = context
 
             completion = anthropic_client.completion(
-                prompt=promptM, model="claude-v1.3-100k", max_tokens_to_sample=1000
+                #prompt=promptM, model="claude-v1.3-100k", max_tokens_to_sample=1000
+                prompt=promptM, model="claude-2.0", max_tokens_to_sample=1000
             )["completion"]
-
-            #context += completion
-
-            #print("Anthropic: " + completion)
-            #print(count_used_tokens(prompt, completion))
 
             resGPT = completion
 

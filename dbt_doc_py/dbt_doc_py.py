@@ -765,8 +765,8 @@ async def main(argv) -> int:
     # Metrics generation    
     makeMetrics = input("Do you want to generate the metrics for the selected models? Y/n: ")
     if makeMetrics.lower() == 'y':
-        await generateMetrics(env, nodes_to_process)
-        #await generateMetrics(env, selected_nodes)
+        #await generateMetrics(env, nodes_to_process)
+        await generateMetrics(env, selected_nodes)
     # Metrics generation
     
     DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)    
@@ -798,5 +798,5 @@ def run_async_main():
     asyncio.run(async_main(sys.argv[1:]))
 
 if __name__ == "__main__":
-    run_async_main(sys.argv[1:])
+    run_async_main(sys.argv[1:])        
     run_async_main()
