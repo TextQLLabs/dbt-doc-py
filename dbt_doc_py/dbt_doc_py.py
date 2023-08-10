@@ -1,7 +1,10 @@
+from .NLP.Anthropic import Anthropic
+from .NLP.OpenAI import OpenAI
 from typing import Optional, Dict, List, Tuple
 import inquirer
 import os
 import sys
+import re
 import json
 from enum import Enum
 import yaml
@@ -9,10 +12,8 @@ from ruamel.yaml import YAML
 from dataclasses import dataclass
 import itertools
 import threading
-from transformers import GPT2Tokenizer
 import asyncio
 import argparse
-import httpx
 import subprocess
 
 stdout_lock = threading.Lock()
@@ -125,12 +126,14 @@ class Env:
         project_name: str,
         models: Optional[set[str]] = None,
         dry_run: bool = False,
+        llm: str = "OpenAI",
     ):
         self.api_key = api_key
         self.base_path = base_path
         self.project_name = project_name
         self.models = models
         self.dry_run = dry_run
+        self.llm = llm
 
 @dataclass
 class Arguments:
@@ -150,6 +153,9 @@ class Gen_Specific(Arguments):
 class DbtDocGen(Arguments):
     pass
 
+class llm(Arguments):
+    path: str
+
 class Dry_Run(Arguments):
     pass
 
@@ -160,68 +166,12 @@ class GenMode(Enum):
 documented_nodes = {}
 
 class ArgsConfig:
-    def __init__(self, working_directory: str, gen_mode: GenMode, dbtDocGen: bool, dry_run: bool):
+    def __init__(self, working_directory: str, gen_mode: GenMode, dbtDocGen: bool, llm: str, dry_run: bool):
         self.working_directory = working_directory
         self.gen_mode = gen_mode
         self.dbtDocGen = dbtDocGen
+        self.llm = llm
         self.dry_run = dry_run
-
-def mk_prompt(reverse_deps: Dict[str, List[str]], node: NodeMetadata) -> str:
-    deps = ",".join(node.depends_on.nodes) if node.depends_on and node.depends_on.nodes else "(No dependencies)"
-    r_deps = (
-        ",".join(reverse_deps[node.unique_id])
-        if node.unique_id in reverse_deps
-        else "Not used by any other models"
-    )
-    staging = "\nThis is a staging model. Be sure to mention that in the summary.\n" if "staging" in node.fqn else ""
-    raw_code = node.raw_code if node.raw_code else ""
-
-    prompt = f"""Write markdown documentation to explain the following DBT model. Be clear and informative, but also accurate. The only information available is the metadata below.
-    Explain the raw SQL, then explain the dependencies. Do not list the SQL code or column names themselves; an explanation is sufficient.
-
-    Model name: {node.name}
-    Raw SQL code: {raw_code}
-    Depends on: {deps}
-    Depended on by: {r_deps}
-    {staging}
-    First, generate a human-readable name for the table as the title (i.e. fct_orders -> # Orders Fact Table).
-    Then, describe the dependencies (both model dependencies and the warehouse tables used by the SQL.) Do this under ## Dependencies.
-    Then, describe what other models reference this model in ## How it's used
-    Then summarize the model logic in ## Summary.
-    """
-    return prompt
-
-def mk_column_prompt(node: NodeMetadata, col: ColumnMetadata, documented_nodes: Dict[str, NodeMetadata]) -> str:
-    # Check if the current column depends on any documented nodes
-    deps = node.depends_on.nodes if node.depends_on and node.depends_on.nodes else []
-    inherited_docs = []
-    for dep in deps:
-        if dep in documented_nodes:
-            # Add the name and description of each column in the dependent node to the list of inherited docs
-            for dep_col in documented_nodes[dep].columns.values():
-                if dep_col.name in dep_col.depends_on.columns:
-                    inherited_docs.append(dep_col.description)
-
-    # Combine the inherited docs into a single string
-    inherited_docs_str = "\n\n".join(inherited_docs)
-    inheritance = f"""This column is inherited from another model. Use this column's documentation from the original model 
-    as context for writing the requested one and be sure to mention it alongside the name of the original model. 
-    Inherited documentation: {inherited_docs_str} """ if inherited_docs_str else ""
-
-    prompt = f"""Write markdown documentation to explain the following DBT column in the context of the parent model and SQL code. Be clear and informative, but also accurate. The only information available is the metadata below.
-    Do not list the SQL code or column names themselves; an explanation is sufficient.
-
-    Column Name: {col.name}
-    Parent Model name: {node.name}
-    Raw SQL code: {node.raw_code}
-    {inheritance}
-
-    First, explain the meaning of the column in plain, non-technical English. Then, explain how the column is extracted in code.
-    If the column is calculated from other columns, explain how the calculation works.
-    If the column is derived from other columns, explain how those columns are extracted.
-    If the column is a inherited from another model, mention the original model and use the provided Inherited documentation (If there is any).
-    """
-    return prompt
 
 class SummarizedResult:
     def __init__(
@@ -239,54 +189,17 @@ class SummarizedResult:
         self.name = name
 
 class TooManyTokensError(Exception):
-    pass
-
-async def run_openai_request(env: Env, prompt: str) -> str:
-    try:
-        tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-        tokens = tokenizer.encode(prompt)
-
-        if len(tokens) + 1000 >= 4096:
-            raise TooManyTokensError()
-
-        temp = 0.2
-
-        base_req = OAIRequest(
-            model="text-davinci-003", prompt=prompt, temperature=temp, max_tokens=1000
-        )
-        
-        if env.api_key.key:
-            url = "https://api.openai.com/v1/completions"
-            headers = {
-                "Authorization": f"Bearer {env.api_key.key}",
-                "Content-Type": "application/json",
-            }
-            data = json.dumps(base_req.__dict__)
-        else:
-            url = "https://api.textql.com/api/oai"
-            headers = {"Content-Type": "application/json"}
-            body = OAIRequestWithUserInfo(prompt=prompt, email=env.api_key.user_info)
-            data = json.dumps(body.__dict__)
-            print(f"Using TextQL API with user info {env.api_key.user_info}")
-            print(f"Data {data}")
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, data=data, timeout=60)        
-        
-        result = OAIResponse(choices=[OAIChoice(text=c["text"]) for c in response.json()["choices"]])
-
-    except Exception as e:
-        print(e)
-        raise e    
-
-    return result.choices[0].text
-    #return "respuesta GPT"
+    pass 
 
 async def gen_column_summaries(env: Env, node: NodeMetadata) -> Dict[str, str]:
     prefix = "[ai-gen] "
     
     async def mapper(k: str, column: ColumnMetadata) -> Tuple[str, str]:
-        result = await run_openai_request(env, mk_column_prompt(node, column, documented_nodes))        
+        if env.llm.lower()[0] == "a":
+            result = await Anthropic.run_request(env, Anthropic.mk_column_prompt(node, column, documented_nodes))
+        else:
+            result = await OpenAI.run_request(env, OpenAI.mk_column_prompt(node, column, documented_nodes))
+            
         return (k, prefix + result)
     
     filtered_columns = {k: v for k, v in node.columns.items() if v.description == ""}
@@ -302,10 +215,17 @@ async def open_ai_summarize(env: Env, reverse_deps: Dict[str, List[str]], node: 
     summary_prefix = "This description is generated by an AI model. Take it with a grain of salt!\n"
 
     try:
-        tbl_result, col_result = await asyncio.gather(
-            run_openai_request(env, mk_prompt(reverse_deps, node)),
-            gen_column_summaries(env, node)
-        )
+        if env.llm.lower()[0]=="a":
+            tbl_result, col_result = await asyncio.gather(
+                Anthropic.run_request(env, Anthropic.mk_prompt(reverse_deps, node)),
+                gen_column_summaries(env, node)
+            )
+        else:
+            tbl_result, col_result = await asyncio.gather(
+                OpenAI.run_request(env, OpenAI.mk_prompt(reverse_deps, node)),                
+                gen_column_summaries(env, node)
+            )
+
         return SummarizedResult(
             patch_path=node.patch_path,
             name=node.name,
@@ -489,7 +409,7 @@ def generateYaml(env: Env,node_metadata: NodeMetadata):
 
     # Extract column names
     column_list = []
-    for model_name, columns in catalog.items():
+    for model_name, (columns, types) in catalog.items():
         if model_name == node_metadata.name:
             column_list = [{'name': col_name} for col_name in columns]
 
@@ -542,11 +462,13 @@ def parse_args(argv) -> ArgsConfig:
     
     parser.add_argument("--dbtDocGen", type=bool, default=True, help="Run command `dbt docs generate` automatically.")
 
+    parser.add_argument("--llm", type=str, default="OpenAI", help="Specify the preferred LLM, OpenAI or Anthropic. Default is OpenAI. (you can type just 'o' or 'a')")
+
     parser.add_argument("--dry-run", action="store_true", help="Enable dry run mode.")
     
     args = parser.parse_args(argv)
 
-    return ArgsConfig(working_directory=args.working_directory, gen_mode=args.gen_mode, dbtDocGen=args.dbtDocGen, dry_run=args.dry_run)
+    return ArgsConfig(working_directory=args.working_directory, gen_mode=args.gen_mode, dbtDocGen=args.dbtDocGen, llm=args.llm, dry_run=args.dry_run)
 
 def parse_columns(json_data: Dict[str, dict]) -> Dict[str, ColumnMetadata]:
     columns = {}
@@ -608,10 +530,13 @@ def getCatalog(json_file: str) -> Dict[str, List[str]]:
         model_name = node['metadata']['name']
         
         # Get column names
-        columns = list(node['columns'].keys())
+        columns = [column_info['name'] for column_info in node['columns'].values()]
+        
+        # Get column types
+        types = [column_info['type'] for column_info in node['columns'].values()]
         
         # Add model and its columns to the result
-        models_columns[model_name] = columns
+        models_columns[model_name] = (columns, types)
     
     return models_columns
 
@@ -637,18 +562,121 @@ def run_dbt_docs_generate(path_to_dbt_project, arg_dbtDocGen):
             print("Running DBT docs generate...")
             subprocess.check_output(['dbt', 'docs', 'generate'], cwd=path_to_dbt_project)
             print("DBT docs successfully generated!")
+            return ""
         except subprocess.CalledProcessError as e:
             print("Could not generate DBT docs.")
             print("Error:")
-            print(e.output)
+            print(e.output)            
+            error = str(e.output)
+            return error
     else:
         print("DBT docs generation is turned off... Make sure to run `dbt docs generate` before and after running this tool.")
 
-async def main(argv) -> int:    
+### Metrics ###
+async def generateMetrics(env: Env, selected_nodes: Dict[str, NodeMetadata]):
+    for node_name, node_metadata in selected_nodes:
+        print("Generating metrics for model: " + node_name)        
+
+        try:
+            catalog_path = os.path.join(env.base_path, "target", "catalog.json")
+            catalog = getCatalog(catalog_path)
+        except Exception as e:
+            print("catalog.json deserialization failed")
+            raise e
+
+        # Extract column names and types for the model
+        column_list = []
+        for model_name, (column_names, column_types) in catalog.items():
+            if model_name == node_metadata.name:
+                column_list = [{col_name : col_type} for col_name, col_type in zip(column_names, column_types)]
+
+        #Asking the model for a base requirement for the metric
+        if env.llm.lower()[0]=="a":
+            promptDes = Anthropic.promptDesignMetrics(node_metadata, column_list)
+            res1 = await Anthropic.run_request(env, promptDes)
+        else:
+            promptDes = OpenAI.promptDesignMetrics(node_metadata, column_list)        
+            res1 = await OpenAI.run_request(env, promptDes)
+        
+        queries = [block.strip() for block in res1.split(";")]        
+        
+        # Create the data structure for the YAML file
+        for rawquery in queries:
+            if len(rawquery.split(":")) == 2:
+                metric_name, query = rawquery.split(":")
+                if env.llm.lower()[0]=="a":
+                    prompt = Anthropic.promptGenMetrics(node_metadata, column_list, query, metric_name)
+                else:
+                    prompt = OpenAI.promptGenMetrics(node_metadata, column_list, query, metric_name)
+                
+                print("Generating metric: " + metric_name + "\n" + "With the prompt: " + query)
+
+                #Call OpenAI API
+                if env.llm.lower()[0]=="a":
+                    result = await Anthropic.run_request(env, prompt)
+                else:
+                    result = await OpenAI.run_request(env, prompt)
+                
+                result = result.replace("\\n", "").replace("\\\\", "")
+
+                # Write the data structure to the YAML file
+                yaml_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), "tql_genmetric_" + metric_name + '.yml')            
+                with open(yaml_file_path, 'w') as yaml_file:
+                    yaml_file.write(result)                
+                    print(f"Metrics YAML file successfully generated at {yaml_file_path}!")
+
+                if env.llm.lower()[0]=="a":
+                    sqlPrompt = Anthropic.promptGenMetricSQL(metric_name, result)
+                    sqlText = await Anthropic.run_request(env, sqlPrompt)
+                else:
+                    sqlPrompt = OpenAI.promptGenMetricSQL(metric_name, result)
+                    sqlText = await OpenAI.run_request(env, sqlPrompt)                
+
+                # Write the query in to a SQL file
+                sql_file_path = os.path.join(env.base_path, os.path.dirname(node_metadata.original_file_path), "metric_" + metric_name + '.sql')            
+                with open(sql_file_path, 'w') as sql_file:
+                    sql_file.write(sqlText)
+                    print(f"Metrics SQL file successfully generated at {sql_file_path}!")
+
+            else:
+                continue        
+
+async def reviewMetrics(errorMessage: str, env: Env):
+    filename = re.search(r'Error reading .*?: (.*?) -', errorMessage)
+    if filename:
+        file = filename.group(1).rstrip().replace("\\\\", "\\")
+        print("Reviewing metrics for file: " + file)
+        file_path = os.path.join(env.base_path, 'models\\', file)
+
+        with open(file_path, "r") as f:
+            contents = f.read()
+
+        if env.llm.lower()[0]=="a":
+            fixPrompt = Anthropic.promptFixMetric(errorMessage, contents)
+            fixedText = await Anthropic.run_request(env, fixPrompt)
+        else:
+            fixPrompt = OpenAI.promptFixMetric(errorMessage, contents)
+            fixedText = await OpenAI.run_request(env, fixPrompt)
+
+        result = fixedText
+
+        with open(file_path, 'w') as yaml_file:
+            yaml_file.write(result)                
+            print(f"Metrics YAML file was successfully rewritten at {file_path}!")
+
+### Metrics ###
+
+async def main(argv) -> int:
+    DDG_error = "error message"    
     try:
         args_env = parse_args(sys.argv[1:])
 
-        run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+        DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+        while DDG_error != "":
+            if (input("Would you like to try again? (y/n) ").lower() == "y"):
+                DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+            else:
+                DDG_error = ""
 
         manifest_path = os.path.join(args_env.working_directory, "target", "manifest.json")        
 
@@ -664,17 +692,24 @@ async def main(argv) -> int:
             print("Reading dbt_project.yml failed. Please re-run from a dbt project root.")
             raise e
 
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if api_key is None:
-            print("You haven't specified an API Key. No worries, this one's on TextQL!")
-            print("In return, please type your email address. We don't collect any other data, nor sell your email to third parties.")
-            print("If you're okay with this, press enter. Otherwise, type 'no' and set the OPENAI_API_KEY environment variable.")
-            email = input("Email (type no to abort): ")
+        if args_env.llm.lower()[0]=="a":
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+        else:
+            api_key = os.environ.get("OPENAI_API_KEY")
 
-            if email == "no":
-                raise ApiKeyNotFound()
+        if api_key is None:
+            if args_env.llm.lower()[0]=="a":
+                print("You are using the Anthropic model, please specify your API Key in the environment variable: ANTHROPIC_API_KEY.")                
             else:
-                user_info = UserInfo(email)
+                print("You haven't specified an API Key. No worries, this one's on TextQL!")
+                print("In return, please type your email address. We don't collect any other data, nor sell your email to third parties.")
+                print("If you're okay with this, press enter. Otherwise, type 'no' and set the OPENAI_API_KEY environment variable.")
+                email = input("Email (type no to abort): ")
+
+                if email == "no":
+                    raise ApiKeyNotFound()
+                else:
+                    user_info = UserInfo(email)
         else:
             user_info = Key(api_key)
 
@@ -682,7 +717,7 @@ async def main(argv) -> int:
 
         documented_nodes = get_nodes_with_description(manifest_path)
 
-        init = (manifest, Env(api_key=user_info, base_path=args_env.working_directory, project_name=project_name, models=models, dry_run=args_env.dry_run))
+        init = (manifest, Env(api_key=user_info, base_path=args_env.working_directory, project_name=project_name, models=models, llm=args_env.llm, dry_run=args_env.dry_run))
 
     except ArguParseException as e:
         print(e.message)
@@ -727,8 +762,30 @@ async def main(argv) -> int:
     for patch_path, group in itertools.groupby(sorted(summarized_nodes, key=lambda x: x.patch_path), key=lambda x: x.patch_path):
         insert_docs(env, patch_path, list(group))
 
-    #print("Success! Make sure to run `dbt docs generate`.")
-    run_dbt_docs_generate(args_env.working_directory)
+    # Metrics generation    
+    makeMetrics = input("Do you want to generate the metrics for the selected models? Y/n: ")
+    if makeMetrics.lower() == 'y':
+        #await generateMetrics(env, nodes_to_process)
+        await generateMetrics(env, selected_nodes)
+    # Metrics generation
+    
+    DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)    
+    counter = 0
+    while DDG_error != "" and counter < 3:
+        counter += 1
+        if ("Syntax error near line" in DDG_error):
+            await reviewMetrics(DDG_error, env)
+            DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+        elif ("Compilation Error" in DDG_error):
+            await reviewMetrics(DDG_error, env)
+            DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+        elif (input("Would you like to try again? (y/n) ").lower() == "y"):
+            DDG_error = run_dbt_docs_generate(args_env.working_directory, args_env.dbtDocGen)
+        else:
+            DDG_error = ""
+
+        if counter == 3:
+            print("Too many errors. Aborting.")
     return 0
 
 async def async_main(argv):

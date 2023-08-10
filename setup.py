@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="dbt-doc-py",
-    version="0.1.17",
+    version="0.1.25",
     packages=find_packages(),
     install_requires=[
     "PyYAML", "dataclasses", "transformers", "argparse", "httpx", "inquirer", "ruamel.yaml",
